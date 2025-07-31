@@ -1,9 +1,10 @@
 [build]
-  command = "pip install -r requirements.txt"
+  command   = "pip install -r requirements.txt"
+  publish   = "static"
   functions = "functions"
-  publish = "static"
 
-[[redirects]]
-  from = "/*"
-  to = "/.netlify/functions/api/:splat"
-  status = 200
+[[plugins]]
+  package = "netlify-plugin-serverless-wsgi"
+  [plugins.inputs]
+    app_module     = "functions/api:app"
+    python_version = "3.11"
