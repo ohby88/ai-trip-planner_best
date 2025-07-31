@@ -1,5 +1,6 @@
 [build]
-  command   = "pip install -r requirements.txt"
+  # 1) npm install → 2) pip install → 3) 빌드/배포
+  command   = "npm install && pip install -r requirements.txt"
   publish   = "static"
   functions = "functions"
 
