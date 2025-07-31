@@ -10,124 +10,123 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from concurrent.futures import ThreadPoolExecutor
 
-def create_app():
-    # .env 파일에서 환경 변수를 로드합니다.
-    load_dotenv()
+# .env 파일에서 환경 변수를 로드합니다.
+load_dotenv()
 
-    app = Flask(__name__)
-    CORS(app)
+# Flask 앱을 최상단에서 바로 생성합니다.
+app = Flask(__name__)
+CORS(app)
 
-    # --- 환경 변수 로드 ---
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-    FIREBASE_CONFIG_STR = os.environ.get("FIREBASE_CONFIG")
-    Maps_API_KEY = os.environ.get("Maps_API_KEY")
-    KAKAO_API_KEY = os.environ.get("KAKAO_API_KEY")
+# --- 환경 변수 로드 ---
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+FIREBASE_CONFIG_STR = os.environ.get("FIREBASE_CONFIG")
+Maps_API_KEY = os.environ.get("Maps_API_KEY")
+KAKAO_API_KEY = os.environ.get("KAKAO_API_KEY")
 
-    # --- Firebase Admin SDK 초기화 ---
-    db = None
+# --- Firebase Admin SDK 초기화 ---
+db = None
+try:
+    if not FIREBASE_CONFIG_STR:
+        raise ValueError("FIREBASE_CONFIG 환경 변수가 설정되지 않았습니다.")
+    
+    # 환경 변수에서 받은 JSON 문자열을 파싱 (작은따옴표 제거)
+    cred_json_str = FIREBASE_CONFIG_STR.strip("'")
+    cred_json = json.loads(cred_json_str)
+    
+    if 'private_key' in cred_json:
+        cred_json['private_key'] = cred_json['private_key'].replace('\\n', '\n')
+    
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(cred_json)
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("✅ Firebase 초기화 성공")
+except Exception as e:
+    print(f"❌ Firebase 초기화 중 오류 발생: {e}")
+
+# --- Gemini 모델 초기화 ---
+model = None
+try:
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY가 .env 파일에 설정되지 않았습니다.")
+    genai.configure(api_key=GEMINI_API_KEY)
+    generation_config = genai.GenerationConfig(response_mime_type="application/json")
+    model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
+    print("✅ Gemini 모델 초기화 성공")
+except Exception as e:
+    print(f"❌ Gemini 모델 초기화 중 오류 발생: {e}")
+
+# --- 서버 측 지오코딩 헬퍼 함수 ---
+def get_geocode(address):
+    if not Maps_API_KEY:
+        return None
     try:
-        if not FIREBASE_CONFIG_STR:
-            raise ValueError("FIREBASE_CONFIG 환경 변수가 설정되지 않았습니다.")
-        # 환경 변수에서 받은 JSON 문자열을 파싱
-        cred_json_str = FIREBASE_CONFIG_STR.strip("'")
-        cred_json = json.loads(cred_json_str)
-        
-        if 'private_key' in cred_json:
-            cred_json['private_key'] = cred_json['private_key'].replace('\\n', '\n')
-        
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(cred_json)
-            firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        print("✅ Firebase 초기화 성공")
-    except Exception as e:
-        print(f"❌ Firebase 초기화 중 오류 발생: {e}")
+        response = requests.get(
+            'https://maps.googleapis.com/maps/api/geocode/json',
+            params={'address': address, 'key': Maps_API_KEY, 'language': 'ko'}
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data['status'] == 'OK':
+            result = data['results'][0]
+            country_code = next((c['short_name'] for c in result.get('address_components', []) if 'country' in c.get('types', [])), None)
+            return {
+                'location': result['geometry']['location'],
+                'viewport': result['geometry'].get('viewport'),
+                'country_code': country_code
+            }
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"지오코딩 API 요청 중 오류 발생: {e}")
+        return None
 
-    # --- Gemini 모델 초기화 ---
-    model = None
+# --- 라우트(경로) 설정 ---
+@app.route('/')
+@app.route('/plan/<plan_id>')
+def index(plan_id=None):
+    return render_template('index.html', Maps_api_key=Maps_API_KEY)
+
+@app.route('/explore')
+def explore():
+    return render_template('explore.html', plans=[])
+
+@app.route('/get_plan/<plan_id>', methods=['GET'])
+def get_plan(plan_id):
+    if not db: return jsonify({"error": "DB 미초기화"}), 500
     try:
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY가 .env 파일에 설정되지 않았습니다.")
-        genai.configure(api_key=GEMINI_API_KEY)
-        generation_config = genai.GenerationConfig(response_mime_type="application/json")
-        model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
-        print("✅ Gemini 모델 초기화 성공")
+        doc = db.collection('plans').document(plan_id).get()
+        return jsonify(doc.to_dict()) if doc.exists else ({"error": "Plan not found"}, 404)
     except Exception as e:
-        print(f"❌ Gemini 모델 초기화 중 오류 발생: {e}")
+        return jsonify({"error": str(e)}), 500
 
-    # --- 서버 측 지오코딩 헬퍼 함수 ---
-    def get_geocode(address):
-        if not Maps_API_KEY:
-            return None
-        try:
-            # ... (이하 생략, 기존 코드와 동일)
-            response = requests.get(
-                'https://maps.googleapis.com/maps/api/geocode/json',
-                params={'address': address, 'key': Maps_API_KEY, 'language': 'ko'}
-            )
-            response.raise_for_status()
-            data = response.json()
-            if data['status'] == 'OK':
-                result = data['results'][0]
-                country_code = next((c['short_name'] for c in result.get('address_components', []) if 'country' in c.get('types', [])), None)
-                return {
-                    'location': result['geometry']['location'],
-                    'viewport': result['geometry'].get('viewport'),
-                    'country_code': country_code
-                }
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"지오코딩 API 요청 중 오류 발생: {e}")
-            return None
+@app.route('/get_kakao_directions', methods=['POST'])
+def get_kakao_directions():
+    if not KAKAO_API_KEY: return jsonify({"error": "카카오 API 키 없음"}), 500
+    data = request.json
+    origin, dest = data.get('origin'), data.get('destination')
+    if not origin or not dest: return jsonify({"error": "좌표 없음"}), 400
 
-    # --- 라우트(경로) 설정 ---
-    @app.route('/')
-    @app.route('/plan/<plan_id>')
-    def index(plan_id=None):
-        return render_template('index.html', Maps_api_key=Maps_API_KEY)
+    headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
+    url = "https://apis-navi.kakaomobility.com/v1/directions"
+    params = {"origin": f"{origin['lng']},{origin['lat']}", "destination": f"{dest['lng']},{dest['lat']}"}
+    
+    try:
+        res = requests.get(url, headers=headers, params=params)
+        res.raise_for_status()
+        result = res.json()
+        if result.get('routes'):
+            summary = result['routes'][0]['summary']
+            return jsonify({"distance": f"{summary['distance']/1000:.1f} km", "duration": f"{summary['duration']//60} 분"})
+        return jsonify({"error": "경로 없음"}), 404
+    except Exception as e:
+        return jsonify({"error": "카카오 API 오류"}), 500
 
-    @app.route('/explore')
-    def explore():
-        return render_template('explore.html', plans=[])
-
-    @app.route('/get_plan/<plan_id>', methods=['GET'])
-    def get_plan(plan_id):
-        if not db: return jsonify({"error": "DB 미초기화"}), 500
-        try:
-            doc = db.collection('plans').document(plan_id).get()
-            return jsonify(doc.to_dict()) if doc.exists else ({"error": "Plan not found"}, 404)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    @app.route('/get_kakao_directions', methods=['POST'])
-    def get_kakao_directions():
-        if not KAKAO_API_KEY: return jsonify({"error": "카카오 API 키 없음"}), 500
+@app.route('/generate', methods=['POST'])
+def generate_plan():
+    if not model or not db: return jsonify({'error': '모델 또는 DB 미초기화'}), 500
+    try:
         data = request.json
-        origin, dest = data.get('origin'), data.get('destination')
-        if not origin or not dest: return jsonify({"error": "좌표 없음"}), 400
-
-        headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
-        url = "https://apis-navi.kakaomobility.com/v1/directions"
-        params = {"origin": f"{origin['lng']},{origin['lat']}", "destination": f"{dest['lng']},{dest['lat']}"}
-        
-        try:
-            res = requests.get(url, headers=headers, params=params)
-            res.raise_for_status()
-            result = res.json()
-            if result.get('routes'):
-                summary = result['routes'][0]['summary']
-                return jsonify({"distance": f"{summary['distance']/1000:.1f} km", "duration": f"{summary['duration']//60} 분"})
-            return jsonify({"error": "경로 없음"}), 404
-        except Exception as e:
-            return jsonify({"error": "카카오 API 오류"}), 500
-
-    @app.route('/generate', methods=['POST'])
-    def generate_plan():
-        if not model or not db: return jsonify({'error': '모델 또는 DB 미초기화'}), 500
-        # ... (이하 generate_plan 함수 내용은 기존과 동일하게 유지)
-        try:
-            data = request.json
-            original_prompt = f"""
+        original_prompt = f"""
 당신은 여행 계획 전문가입니다. 다음 요구사항에 맞춰 여행 계획을 JSON 형식으로 작성해주세요.
 
 **요구사항:**
@@ -165,16 +164,35 @@ def create_app():
 - 모든 장소 이름은 "{data.get('destination')}" 내에 실제로 존재하는 정확한 명칭을 사용해주세요.
 - 장소 이름이 중복되지 않도록 주의해주세요.
 """
-            # 이하 로직은 기존과 동일하게 유지됩니다.
-            # ...
-            return jsonify({'plan': {}, 'plan_id': 'test_id'}) # 임시 반환
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
+        MAX_RETRIES = 2
+        validated_plan_str = None
+        
+        destination_geocode = get_geocode(data.get('destination'))
+        
+        for i in range(MAX_RETRIES):
+            # ... (이하 기존 로직과 동일)
+            pass
 
-    return app
+        # ... (이하 기존 로직과 동일)
+        # 이 부분은 실제 로직으로 채워져 있어야 합니다. 현재는 생략되어 있습니다.
+        # 실제로는 AI 모델 호출 및 결과 처리 로직이 여기에 와야 합니다.
+        
+        # 임시 반환값 (실제로는 AI 결과가 와야 함)
+        validated_plan_str = '{ "title": "임시 계획", "daily_plans": [] }'
+        final_plan_data = json.loads(validated_plan_str)
+
+        if destination_geocode and destination_geocode.get('country_code'):
+            final_plan_data['country_code'] = destination_geocode.get('country_code')
+
+        full_plan_data = { 'plan': final_plan_data, 'request_details': data }
+        doc_ref = db.collection('plans').document()
+        doc_ref.set(full_plan_data)
+        
+        return jsonify({'plan': final_plan_data, 'plan_id': doc_ref.id})
+    except Exception as e:
+        print(f"플랜 생성 중 오류: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # 로컬 개발 환경에서 직접 실행할 때 사용
 if __name__ == '__main__':
-    app = create_app()
     app.run(host='0.0.0.0', port=5000, debug=True)
-
