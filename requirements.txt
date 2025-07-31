@@ -5,3 +5,5 @@ google-generativeai
 python-dotenv
 firebase-admin
 serverless-wsgi
+gunicorn
+gevent
