@@ -9,13 +9,18 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 from concurrent.futures import ThreadPoolExecutor
-from serverless_wsgi import handle
+from serverless_wsgi import handle_request
 
 # .env 파일에서 환경 변수를 로드합니다.
 load_dotenv()
 
 # Flask 앱 생성
-app = Flask(__name__)
+# static_folder와 template_folder는 프로젝트 구조에 맞춰 조정하세요
+app = Flask(
+    __name__,
+    static_folder="../static",
+    template_folder="../templates"
+)
 CORS(app)
 
 # --- 환경 변수 로드 ---
@@ -54,7 +59,6 @@ except Exception as e:
 
 # --- 서버 측 지오코딩 헬퍼 함수 ---
 def get_geocode(address):
-    """주소를 받아 위경도, 뷰포트, 국가 코드를 반환하는 함수"""
     if not Maps_API_KEY:
         print("❌ Maps_API_KEY가 설정되지 않아 지오코딩을 건너뜁니다.")
         return None
@@ -83,21 +87,17 @@ def get_geocode(address):
         return None
 
 # --- 라우트(경로) 설정 ---
-
 @app.route('/')
 @app.route('/plan/<plan_id>')
 def index(plan_id=None):
-    """메인 페이지 및 공유된 계획 페이지를 렌더링합니다."""
     return render_template('index.html', Maps_api_key=Maps_API_KEY)
 
 @app.route('/explore')
 def explore():
-    """'둘러보기' 페이지를 렌더링합니다."""
     return render_template('explore.html', plans=[])
 
 @app.route('/get_plan/<plan_id>', methods=['GET'])
 def get_plan(plan_id):
-    """Firestore에서 저장된 계획을 ID로 조회하여 반환합니다."""
     if not db:
         return jsonify({"error": "데이터베이스가 초기화되지 않았습니다."}), 500
     try:
@@ -112,25 +112,21 @@ def get_plan(plan_id):
 
 @app.route('/get_kakao_directions', methods=['POST'])
 def get_kakao_directions():
-    """카카오 모빌리티 API를 이용해 길찾기 정보를 반환합니다."""
     if not KAKAO_API_KEY:
         return jsonify({"error": "카카오 API 키가 설정되지 않았습니다."}), 500
     data = request.json
     origin = data.get('origin')
     destination = data.get('destination')
-
     if not origin or not destination:
         return jsonify({"error": "출발지 또는 도착지 정보가 없습니다."}), 400
-
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     url = "https://apis-navi.kakaomobility.com/v1/directions"
     params = {"origin": f"{origin['lng']},{origin['lat']}", "destination": f"{destination['lng']},{destination['lat']}"}
-    
     try:
         res = requests.get(url, headers=headers, params=params)
         res.raise_for_status()
         result = res.json()
-        if result.get('routes') and len(result['routes']) > 0:
+        if result.get('routes'):
             summary = result['routes'][0]['summary']
             distance_km = round(summary['distance'] / 1000, 1)
             duration_min = round(summary['duration'] / 60)
@@ -143,12 +139,12 @@ def get_kakao_directions():
 
 @app.route('/generate', methods=['POST'])
 def generate_plan():
-    """AI를 이용해 여행 계획을 생성하고, 검증 후 반환하는 핵심 함수"""
     if not model or not db:
         return jsonify({'error': 'AI 모델 또는 데이터베이스가 초기화되지 않았습니다.'}), 500
-        
     try:
         data = request.json
+        # 사용자 입력에 따라 마지막 날 출발 시간을 반영하도록 수정
+        departure_time = data.get('departureTime') or ""
         original_prompt = f"""
 당신은 여행 계획 전문가입니다. 다음 요구사항에 맞춰 여행 계획을 JSON 형식으로 작성해주세요.
 
@@ -161,7 +157,7 @@ def generate_plan():
 - **주요 이동 수단:** {data.get('transportation')}
 - **숙소 유형:** {data.get('lodgingType')}
 - **첫날 도착 시간:** {data.get('arrivalTime')}
-- **마지막 날 출발 시간:** "오후 (저녁까지 즐기기)"
+- **마지막 날 출발 시간:** {departure_time}
 
 **JSON 출력 형식 (반드시 이 형식을 따라야 합니다):**
 {{
@@ -189,83 +185,57 @@ def generate_plan():
 """
         MAX_RETRIES = 2
         validated_plan_str = None
-        
         destination_geocode = get_geocode(data.get('destination'))
         
         for i in range(MAX_RETRIES):
             print(f"AI 계획 생성 시도 #{i + 1}")
             response = model.generate_content(original_prompt)
             raw_text = response.text
-            
             match = re.search(r'```json\s*(\{.*?\})\s*```', raw_text, re.DOTALL) or re.search(r'\{.*\}', raw_text, re.DOTALL)
             if not match:
                 original_prompt += "\n\n[오류 수정 요청] JSON 형식이 아닙니다. 반드시 JSON 형식으로만 응답해주세요."
                 continue
             plan_json_str = match.group(1) if match.groups() else match.group(0)
-            
             try:
                 plan_data = json.loads(plan_json_str)
             except json.JSONDecodeError:
                 original_prompt += "\n\n[오류 수정 요청] 이전 응답은 유효한 JSON이 아니었습니다. JSON 문법 오류를 수정하여 다시 생성해주세요."
                 continue
-
             if not isinstance(plan_data.get('daily_plans'), list) or not plan_data['daily_plans']:
                 original_prompt += "\n\n[오류 수정 요청] 'daily_plans' 배열이 비어있거나 누락되었습니다. 다시 생성해주세요."
                 continue
-            
             if destination_geocode and destination_geocode.get('viewport'):
                 destination_bounds = destination_geocode['viewport']
-                is_valid = True
-                invalid_places = []
-                
-                activities_to_check = [act for day in plan_data.get('daily_plans', []) for act in day.get('activities', [])]
-
                 def check_activity(activity):
                     place_name = activity.get('place')
                     place_geocode = get_geocode(f"{place_name}, {data.get('destination')}")
                     if not place_geocode: return (False, f"'{place_name}' (검색 실패)")
                     loc = place_geocode['location']
-                    if not (destination_bounds['southwest']['lat'] <= loc['lat'] <= destination_bounds['northeast']['lat'] and \
-                            destination_bounds['southwest']['lng'] <= loc['lng'] <= destination_bounds['northeast']['lng']):
+                    sw, ne = destination_bounds['southwest'], destination_bounds['northeast']
+                    if not (sw['lat'] <= loc['lat'] <= ne['lat'] and sw['lng'] <= loc['lng'] <= ne['lng']):
                         return (False, f"'{place_name}' (경계 벗어남)")
                     return (True, None)
-
                 with ThreadPoolExecutor(max_workers=10) as executor:
-                    results = list(executor.map(check_activity, activities_to_check))
-                
-                for valid_status, error_message in results:
-                    if not valid_status:
-                        is_valid = False
-                        if error_message: invalid_places.append(error_message)
-                
-                if not is_valid:
-                    correction_request = f"\n\n[오류 수정 요청] 이전 계획에 '{data.get('destination')}'를 벗어나는 장소({', '.join(invalid_places)})가 포함되었습니다. 이 장소들을 '{data.get('destination')}' 내의 올바른 장소로 대체하여 계획 전체를 다시 생성해주세요."
-                    original_prompt += correction_request
-                    print(f"❌ 계획 유효성 검증 실패. 재시도합니다.")
+                    results = list(executor.map(check_activity, [act for day in plan_data['daily_plans'] for act in day['activities']]))
+                invalid = [err for ok, err in results if not ok and err]
+                if invalid:
+                    original_prompt += f"\n\n[오류 수정 요청] 다음 장소가 '{data.get('destination')}'를 벗어납니다: {', '.join(invalid)}. 올바른 장소로 대체해주세요."
+                    print("❌ 계획 유효성 검증 실패. 재시도합니다.")
                     continue
-            
-            print("✅ 계획 유효성 검증 성공!")
             validated_plan_str = plan_json_str
+            print("✅ 계획 유효성 검증 성공!")
             break
-
         if not validated_plan_str:
             raise ValueError("AI가 여러 번 시도했으나 올바른 계획을 생성하지 못했습니다.")
-
         final_plan_data = json.loads(validated_plan_str)
-
         if destination_geocode and destination_geocode.get('country_code'):
-            final_plan_data['country_code'] = destination_geocode.get('country_code')
-
-        full_plan_data = { 'plan': final_plan_data, 'request_details': data }
+            final_plan_data['country_code'] = destination_geocode['country_code']
+        full_plan_data = {'plan': final_plan_data, 'request_details': data}
         doc_ref = db.collection('plans').document()
         doc_ref.set(full_plan_data)
-        
         return jsonify({'plan': final_plan_data, 'plan_id': doc_ref.id})
-    
     except Exception as e:
-        print(f"!!!!!!!!!! 플랜 생성 중 심각한 오류 발생 !!!!!!!!!!\n오류 유형: {type(e).__name__}\n오류 메시지: {e}")
-        return jsonify({'error': '여행 계획 생성 중 서버 내부 오류가 발생했습니다.'}), 500
+        print(f"!!!!!!!!!! 플랜 생성 중 심각한 오류 발생 !!!!!!!!!!\n오류: {e}")
+        return jsonify({'error': '서버 내부 오류가 발생했습니다.'}), 500
 
 # Netlify Functions 핸들러
-def handler(event, context):
-    return handle(app, event, context)
