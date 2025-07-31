@@ -1,7 +1,7 @@
 {
   "name": "ai-travel-planner",
   "version": "1.0.0",
-  "devDependencies": {
-    "netlify-plugin-serverless-wsgi": "^1.3.0"
+  "dependencies": {
+    "netlify-plugin-serverless-wsgi": "git+https://github.com/netlify/netlify-plugin-serverless-wsgi.git"
   }
 }
