@@ -1,11 +1,10 @@
 [build]
-  command   = "npm install && pip install -r requirements.txt"
+  command   = "pip install -r requirements.txt"
   publish   = "static"
   functions = "functions"
 
 [[plugins]]
   package = "netlify-plugin-serverless-wsgi"
   [plugins.inputs]
-    # functions/api.py 에서 Flask 앱 객체를 읽어옵니다.
-    app_module     = "api:app"
+    app_module     = "functions/api:app"
     python_version = "3.11"
