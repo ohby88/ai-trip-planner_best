@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>추천 여행 코스 둘러보기</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Explore Plans 🗺️</h1>
+            <p>다른 여행자들이 만든 멋진 코스들을 둘러보고 영감을 얻어보세요.</p>
+            <nav class="main-nav">
+                <a href="/" class="nav-link">새로운 계획 만들기</a>
+            </nav>
+        </header>
+        <main>
+            <div class="plan-grid">
+                {% if plans %}
+                    {% for plan in plans %}
+                    <a href="/plan/{{ plan.id }}" class="plan-card">
+                        <!-- 각 여행 계획의 대표 이미지를 표시합니다. -->
+                        <img src="{{ plan.image_url }}" alt="{{ plan.destination }} 여행 이미지" class="plan-card-image" onerror="this.onerror=null;this.src='https://placehold.co/600x400/EAEAEA/333333?text=Image\nNot\nFound';">
+                        <div class="plan-card-content">
+                            <h3>{{ plan.title }}</h3>
+                            <div class="plan-card-meta">
+                                <span>📍 {{ plan.destination }}</span>
+                                <span>📅 {{ plan.duration }}</span>
+                            </div>
+                        </div>
+                    </a>
+                    {% endfor %}
+                {% else %}
+                    <p class="no-plans">아직 공유된 계획이 없습니다. 첫 번째 계획을 만들어보세요!</p>
+                {% endif %}
+            </div>
+        </main>
+    </div>
+</body>
+</html>
