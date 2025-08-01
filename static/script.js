@@ -124,6 +124,56 @@ async function loadSharedPlan(planId) {
     }
 }
 
+function pollForPlan(planId) {
+    console.log(`Polling for plan: ${planId}`);
+    const interval = setInterval(async () => {
+        try {
+            const response = await fetch(`${BASE_PATH}/get_plan/${planId}`);
+            if (!response.ok) {
+                // 404는 아직 문서가 생성되지 않은 경우일 수 있으므로 계속 시도
+                if (response.status === 404) {
+                    console.log('Plan not ready yet...');
+                    return; 
+                }
+                throw new Error(`서버 확인 오류: ${response.status}`);
+            }
+            
+            const fullPlanData = await response.json();
+
+            // Firestore 문서에 status 필드를 추가하여 상태 관리
+            if (fullPlanData && fullPlanData.status === 'completed') {
+                clearInterval(interval); // 폴링 중단
+                console.log('Plan generation complete!', fullPlanData);
+
+                const planData = fullPlanData.plan;
+                if (!planData || !planData.daily_plans) {
+                    throw new Error('잘못된 계획 데이터 형식입니다.');
+                }
+                
+                planData.destination = fullPlanData.request_details?.destination || '';
+                planData.arrivalTime = fullPlanData.request_details?.arrivalTime || '점심 (점심부터 시작)';
+
+                await geocodeAndProcessPlan(planData);
+                history.pushState({ planId: planId }, `Plan ${planId}`, `/plan/${planId}`);
+
+            } else if (fullPlanData && fullPlanData.status === 'failed') {
+                clearInterval(interval);
+                throw new Error('AI가 계획 생성에 실패했습니다. 다시 시도해 주세요.');
+            }
+            // 'processing' 상태이면 아무것도 하지 않고 다음 폴링까지 대기
+            
+        } catch (error) {
+            clearInterval(interval); // 오류 발생 시 폴링 중단
+            handleError(error);
+            // UI 초기화
+            generateBtn.disabled = false;
+            generateBtn.textContent = '나만의 여행 코스 만들기 ✨';
+            loading.classList.add('hidden');
+        }
+    }, 3000); // 3초마다 확인
+}
+
+
 /**
  * 사용자가 입력한 폼 데이터 기반으로 AI에게 계획 생성 요청
  */
@@ -154,23 +204,18 @@ async function generatePlanAndRender() {
         if (!response.ok) throw new Error(`서버 오류: ${response.status}`);
 
         const data = await response.json();
-        const { plan: planData, plan_id: planId } = data;
+        const { plan_id: planId } = data;
 
-        if (!planData || !planData.daily_plans || !Array.isArray(planData.daily_plans)) {
-            throw new Error("AI가 유효한 여행 계획을 생성하지 못했습니다. 다시 시도해 주세요.");
+        if (!planId) {
+            throw new Error("서버로부터 유효한 plan_id를 받지 못했습니다.");
         }
-
-        planData.destination = requestDetails.destination;
-        planData.arrivalTime = requestDetails.arrivalTime;
-
-        await geocodeAndProcessPlan(planData);
-
-        if (planId) {
-            history.pushState({ planId: planId }, `Plan ${planId}`, `/plan/${planId}`);
-        }
+        
+        // Polling 시작
+        pollForPlan(planId);
+        
     } catch (error) {
         handleError(error);
-    } finally {
+        // UI 초기화
         generateBtn.disabled = false;
         generateBtn.textContent = '나만의 여행 코스 만들기 ✨';
         loading.classList.add('hidden');
