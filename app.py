@@ -30,7 +30,12 @@ try:
         raise ValueError("FIREBASE_CONFIG 환경 변수가 설정되지 않았습니다.")
     
     # 환경 변수에서 받은 JSON 문자열을 파싱 (작은따옴표 제거)
-    cred_json_str = FIREBASE_CONFIG_STR.strip("'")
+    # Cloudtype 환경에서는 문자열에 추가적인 따옴표가 있을 수 있으므로 제거합니다.
+    if FIREBASE_CONFIG_STR.startswith("'") and FIREBASE_CONFIG_STR.endswith("'"):
+        cred_json_str = FIREBASE_CONFIG_STR[1:-1]
+    else:
+        cred_json_str = FIREBASE_CONFIG_STR
+
     cred_json = json.loads(cred_json_str)
     
     if 'private_key' in cred_json:
@@ -43,6 +48,8 @@ try:
     print("✅ Firebase 초기화 성공")
 except Exception as e:
     print(f"❌ Firebase 초기화 중 오류 발생: {e}")
+    # 초기화 실패 시 db를 None으로 유지
+    db = None
 
 # --- Gemini 모델 초기화 ---
 model = None
@@ -55,6 +62,7 @@ try:
     print("✅ Gemini 모델 초기화 성공")
 except Exception as e:
     print(f"❌ Gemini 모델 초기화 중 오류 발생: {e}")
+    model = None
 
 # --- 서버 측 지오코딩 헬퍼 함수 ---
 def get_geocode(address):
@@ -92,7 +100,7 @@ def explore():
 
 @app.route('/get_plan/<plan_id>', methods=['GET'])
 def get_plan(plan_id):
-    if not db: return jsonify({"error": "DB 미초기화"}), 500
+    if not db: return jsonify({"error": "DB가 초기화되지 않았습니다."}), 500
     try:
         doc = db.collection('plans').document(plan_id).get()
         return jsonify(doc.to_dict()) if doc.exists else ({"error": "Plan not found"}, 404)
@@ -101,10 +109,10 @@ def get_plan(plan_id):
 
 @app.route('/get_kakao_directions', methods=['POST'])
 def get_kakao_directions():
-    if not KAKAO_API_KEY: return jsonify({"error": "카카오 API 키 없음"}), 500
+    if not KAKAO_API_KEY: return jsonify({"error": "카카오 API 키가 없습니다."}), 500
     data = request.json
     origin, dest = data.get('origin'), data.get('destination')
-    if not origin or not dest: return jsonify({"error": "좌표 없음"}), 400
+    if not origin or not dest: return jsonify({"error": "좌표가 없습니다."}), 400
 
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     url = "https://apis-navi.kakaomobility.com/v1/directions"
@@ -117,7 +125,7 @@ def get_kakao_directions():
         if result.get('routes'):
             summary = result['routes'][0]['summary']
             return jsonify({"distance": f"{summary['distance']/1000:.1f} km", "duration": f"{summary['duration']//60} 분"})
-        return jsonify({"error": "경로 없음"}), 404
+        return jsonify({"error": "경로를 찾을 수 없습니다."}), 404
     except Exception as e:
         return jsonify({"error": "카카오 API 오류"}), 500
 
