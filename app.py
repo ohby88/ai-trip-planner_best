@@ -123,7 +123,10 @@ def get_kakao_directions():
 
 @app.route('/generate', methods=['POST'])
 def generate_plan():
-    if not model or not db: return jsonify({'error': '모델 또는 DB 미초기화'}), 500
+    """AI를 이용해 여행 계획을 생성하고, 검증 후 반환하는 핵심 함수"""
+    if not model or not db:
+        return jsonify({'error': 'AI 모델 또는 데이터베이스가 초기화되지 않았습니다.'}), 500
+        
     try:
         data = request.json
         original_prompt = f"""
@@ -170,15 +173,64 @@ def generate_plan():
         destination_geocode = get_geocode(data.get('destination'))
         
         for i in range(MAX_RETRIES):
-            # ... (이하 기존 로직과 동일)
-            pass
+            print(f"AI 계획 생성 시도 #{i + 1}")
+            response = model.generate_content(original_prompt)
+            raw_text = response.text
+            
+            match = re.search(r'```json\s*(\{.*?\})\s*```', raw_text, re.DOTALL) or re.search(r'\{.*\}', raw_text, re.DOTALL)
+            if not match:
+                original_prompt += "\n\n[오류 수정 요청] JSON 형식이 아닙니다. 반드시 JSON 형식으로만 응답해주세요."
+                continue
+            plan_json_str = match.group(1) if match.groups() else match.group(0)
+            
+            try:
+                plan_data = json.loads(plan_json_str)
+            except json.JSONDecodeError:
+                original_prompt += "\n\n[오류 수정 요청] 이전 응답은 유효한 JSON이 아니었습니다. JSON 문법 오류를 수정하여 다시 생성해주세요."
+                continue
 
-        # ... (이하 기존 로직과 동일)
-        # 이 부분은 실제 로직으로 채워져 있어야 합니다. 현재는 생략되어 있습니다.
-        # 실제로는 AI 모델 호출 및 결과 처리 로직이 여기에 와야 합니다.
-        
-        # 임시 반환값 (실제로는 AI 결과가 와야 함)
-        validated_plan_str = '{ "title": "임시 계획", "daily_plans": [] }'
+            if not isinstance(plan_data.get('daily_plans'), list) or not plan_data['daily_plans']:
+                original_prompt += "\n\n[오류 수정 요청] 'daily_plans' 배열이 비어있거나 누락되었습니다. 다시 생성해주세요."
+                continue
+            
+            if destination_geocode and destination_geocode.get('viewport'):
+                destination_bounds = destination_geocode['viewport']
+                is_valid = True
+                invalid_places = []
+                
+                activities_to_check = [act for day in plan_data.get('daily_plans', []) for act in day.get('activities', [])]
+
+                def check_activity(activity):
+                    place_name = activity.get('place')
+                    place_geocode = get_geocode(f"{place_name}, {data.get('destination')}")
+                    if not place_geocode: return (False, f"'{place_name}' (검색 실패)")
+                    loc = place_geocode['location']
+                    if not (destination_bounds['southwest']['lat'] <= loc['lat'] <= destination_bounds['northeast']['lat'] and \
+                            destination_bounds['southwest']['lng'] <= loc['lng'] <= destination_bounds['northeast']['lng']):
+                        return (False, f"'{place_name}' (경계 벗어남)")
+                    return (True, None)
+
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    results = list(executor.map(check_activity, activities_to_check))
+                
+                for valid_status, error_message in results:
+                    if not valid_status:
+                        is_valid = False
+                        if error_message: invalid_places.append(error_message)
+                
+                if not is_valid:
+                    correction_request = f"\n\n[오류 수정 요청] 이전 계획에 '{data.get('destination')}'를 벗어나는 장소({', '.join(invalid_places)})가 포함되었습니다. 이 장소들을 '{data.get('destination')}' 내의 올바른 장소로 대체하여 계획 전체를 다시 생성해주세요."
+                    original_prompt += correction_request
+                    print(f"❌ 계획 유효성 검증 실패. 재시도합니다.")
+                    continue
+            
+            print("✅ 계획 유효성 검증 성공!")
+            validated_plan_str = plan_json_str
+            break
+
+        if not validated_plan_str:
+            raise ValueError("AI가 여러 번 시도했으나 올바른 계획을 생성하지 못했습니다.")
+
         final_plan_data = json.loads(validated_plan_str)
 
         if destination_geocode and destination_geocode.get('country_code'):
@@ -189,6 +241,7 @@ def generate_plan():
         doc_ref.set(full_plan_data)
         
         return jsonify({'plan': final_plan_data, 'plan_id': doc_ref.id})
+    
     except Exception as e:
         print(f"플랜 생성 중 오류: {e}")
         return jsonify({'error': str(e)}), 500
