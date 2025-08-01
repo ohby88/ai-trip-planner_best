@@ -329,7 +329,7 @@ async function getSegmentsForPath(path) {
         for (let i = 0; i < path.length - 1; i++) {
             promises.push(new Promise(async (resolve) => {
                 try {
-                    const response = await fetch(`${BASE_PATH}/get_kakao_directions`, { … });
+                    const response = await fetch(`${BASE_PATH}/get_kakao_directions`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
