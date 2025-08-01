@@ -15,7 +15,7 @@ const resultContainer = document.getElementById('result-container');
 const planTitleEl = document.getElementById('plan-title');
 const dayTabsEl = document.getElementById('day-tabs');
 const itineraryPanelEl = document.getElementById('itinerary-panel');
-const basePath = '';
+const BASE_PATH = '';
 
 let globalPlanData = null;
 let mainMap = null;
