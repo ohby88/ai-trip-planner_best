@@ -8,8 +8,6 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
-# `concurrent.futures` 모듈은 더 이상 사용되지 않으므로 제거합니다.
-# from concurrent.futures import ThreadPoolExecutor
 
 # .env 파일에서 환경 변수를 로드합니다.
 load_dotenv()
@@ -166,44 +164,23 @@ def generate_plan():
 - 모든 장소 이름은 "{data.get('destination')}" 내에 실제로 존재하는 정확한 명칭을 사용해주세요.
 - 장소 이름이 중복되지 않도록 주의해주세요.
 """
-        MAX_RETRIES = 2
-        final_plan_data = None
+        # 재시도 로직을 제거하고, AI 계획을 한 번만 생성하도록 수정합니다.
+        print(f"AI 계획 생성 시도")
+        response = model.generate_content(original_prompt)
+        raw_text = response.text
         
-        # 서버 측 지오코딩 검증 로직을 제거합니다.
-        # 이 로직은 클라이언트 측 JavaScript에서 처리하는 것이 훨씬 효율적입니다.
-        for i in range(MAX_RETRIES):
-            print(f"AI 계획 생성 시도 #{i + 1}")
-            response = model.generate_content(original_prompt)
-            raw_text = response.text
-            
-            match = re.search(r'```json\s*(\{.*?\})\s*```', raw_text, re.DOTALL) or re.search(r'\{.*\}', raw_text, re.DOTALL)
-            if not match:
-                original_prompt += "\n\n[오류 수정 요청] JSON 형식이 아닙니다. 반드시 JSON 형식으로만 응답해주세요."
-                continue
-            plan_json_str = match.group(1) if match.groups() else match.group(0)
-            
-            try:
-                plan_data = json.loads(plan_json_str)
-            except json.JSONDecodeError:
-                original_prompt += "\n\n[오류 수정 요청] 이전 응답은 유효한 JSON이 아니었습니다. JSON 문법 오류를 수정하여 다시 생성해주세요."
-                continue
+        match = re.search(r'```json\s*(\{.*?\})\s*```', raw_text, re.DOTALL) or re.search(r'\{.*\}', raw_text, re.DOTALL)
+        if not match:
+            raise ValueError("AI가 유효한 JSON 형식의 응답을 생성하지 못했습니다.")
+        plan_json_str = match.group(1) if match.groups() else match.group(0)
+        
+        try:
+            final_plan_data = json.loads(plan_json_str)
+        except json.JSONDecodeError:
+            raise ValueError("AI가 유효한 JSON 문법의 응답을 생성하지 못했습니다.")
 
-            if not isinstance(plan_data.get('daily_plans'), list) or not plan_data['daily_plans']:
-                original_prompt += "\n\n[오류 수정 요청] 'daily_plans' 배열이 비어있거나 누락되었습니다. 다시 생성해주세요."
-                continue
-            
-            # 유효성 검증에 성공했으므로 루프를 빠져나갑니다.
-            final_plan_data = plan_data
-            break
-
-        if not final_plan_data:
-            raise ValueError("AI가 여러 번 시도했으나 올바른 계획을 생성하지 못했습니다.")
-
-        # 서버 측 지오코딩 API를 호출하는 코드를 제거했으므로,
-        # 이 부분은 주석 처리하거나 제거합니다.
-        # destination_geocode = get_geocode(data.get('destination'))
-        # if destination_geocode and destination_geocode.get('country_code'):
-        #     final_plan_data['country_code'] = destination_geocode.get('country_code')
+        if not isinstance(final_plan_data.get('daily_plans'), list) or not final_plan_data['daily_plans']:
+            raise ValueError("'daily_plans' 배열이 비어있거나 누락되었습니다.")
 
         full_plan_data = { 'plan': final_plan_data, 'request_details': data }
         doc_ref = db.collection('plans').document()
