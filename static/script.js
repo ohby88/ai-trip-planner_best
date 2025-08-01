@@ -102,7 +102,7 @@ async function loadSharedPlan(planId) {
     plannerForm.classList.add('hidden');
     try {
         await waitForGoogleMaps();
-        const response = await fetch(`/get_plan/${planId}`);
+        const response = await fetch(`${BASE_PATH}/get_plan/${planId}`);
         if (!response.ok) throw new Error('계획을 불러오는 데 실패했습니다.');
 
         const fullPlanData = await response.json();
@@ -144,7 +144,7 @@ async function generatePlanAndRender() {
     };
 
     try {
-        const response = await fetch('/generate', {
+        const response = await fetch(`${BASE_PATH}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestDetails),
@@ -329,7 +329,7 @@ async function getSegmentsForPath(path) {
         for (let i = 0; i < path.length - 1; i++) {
             promises.push(new Promise(async (resolve) => {
                 try {
-                    const response = await fetch('/get_kakao_directions', {
+                    const response = await fetch(`${BASE_PATH}/get_kakao_directions`, { … });
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
