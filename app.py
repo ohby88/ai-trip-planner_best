@@ -8,7 +8,8 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
-from concurrent.futures import ThreadPoolExecutor
+# `concurrent.futures` 모듈은 더 이상 사용되지 않으므로 제거합니다.
+# from concurrent.futures import ThreadPoolExecutor
 
 # .env 파일에서 환경 변수를 로드합니다.
 load_dotenv()
@@ -74,29 +75,9 @@ except Exception as e:
     print(f"❌ Gemini 모델 초기화 중 오류 발생: {e}")
     model = None
 
-# --- 서버 측 지오코딩 헬퍼 함수 ---
-def get_geocode(address):
-    if not Maps_API_KEY:
-        return None
-    try:
-        response = requests.get(
-            'https://maps.googleapis.com/maps/api/geocode/json',
-            params={'address': address, 'key': Maps_API_KEY, 'language': 'ko'}
-        )
-        response.raise_for_status()
-        data = response.json()
-        if data['status'] == 'OK':
-            result = data['results'][0]
-            country_code = next((c['short_name'] for c in result.get('address_components', []) if 'country' in c.get('types', [])), None)
-            return {
-                'location': result['geometry']['location'],
-                'viewport': result['geometry'].get('viewport'),
-                'country_code': country_code
-            }
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"지오코딩 API 요청 중 오류 발생: {e}")
-        return None
+# 서버 측 Geocoding 헬퍼 함수는 더 이상 사용하지 않으므로, 더 이상 필요하지 않습니다.
+# def get_geocode(address):
+#     ...
 
 # --- 라우트(경로) 설정 ---
 @app.route('/')
@@ -186,10 +167,10 @@ def generate_plan():
 - 장소 이름이 중복되지 않도록 주의해주세요.
 """
         MAX_RETRIES = 2
-        validated_plan_str = None
+        final_plan_data = None
         
-        destination_geocode = get_geocode(data.get('destination'))
-        
+        # 서버 측 지오코딩 검증 로직을 제거합니다.
+        # 이 로직은 클라이언트 측 JavaScript에서 처리하는 것이 훨씬 효율적입니다.
         for i in range(MAX_RETRIES):
             print(f"AI 계획 생성 시도 #{i + 1}")
             response = model.generate_content(original_prompt)
@@ -211,48 +192,18 @@ def generate_plan():
                 original_prompt += "\n\n[오류 수정 요청] 'daily_plans' 배열이 비어있거나 누락되었습니다. 다시 생성해주세요."
                 continue
             
-            if destination_geocode and destination_geocode.get('viewport'):
-                destination_bounds = destination_geocode['viewport']
-                is_valid = True
-                invalid_places = []
-                
-                activities_to_check = [act for day in plan_data.get('daily_plans', []) for act in day.get('activities', [])]
-
-                def check_activity(activity):
-                    place_name = activity.get('place')
-                    place_geocode = get_geocode(f"{place_name}, {data.get('destination')}")
-                    if not place_geocode: return (False, f"'{place_name}' (검색 실패)")
-                    loc = place_geocode['location']
-                    if not (destination_bounds['southwest']['lat'] <= loc['lat'] <= destination_bounds['northeast']['lat'] and \
-                            destination_bounds['southwest']['lng'] <= loc['lng'] <= destination_bounds['northeast']['lng']):
-                        return (False, f"'{place_name}' (경계 벗어남)")
-                    return (True, None)
-
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    results = list(executor.map(check_activity, activities_to_check))
-                
-                for valid_status, error_message in results:
-                    if not valid_status:
-                        is_valid = False
-                        if error_message: invalid_places.append(error_message)
-                
-                if not is_valid:
-                    correction_request = f"\n\n[오류 수정 요청] 이전 계획에 '{data.get('destination')}'를 벗어나는 장소({', '.join(invalid_places)})가 포함되었습니다. 이 장소들을 '{data.get('destination')}' 내의 올바른 장소로 대체하여 계획 전체를 다시 생성해주세요."
-                    original_prompt += correction_request
-                    print(f"❌ 계획 유효성 검증 실패. 재시도합니다.")
-                    continue
-            
-            print("✅ 계획 유효성 검증 성공!")
-            validated_plan_str = plan_json_str
+            # 유효성 검증에 성공했으므로 루프를 빠져나갑니다.
+            final_plan_data = plan_data
             break
 
-        if not validated_plan_str:
+        if not final_plan_data:
             raise ValueError("AI가 여러 번 시도했으나 올바른 계획을 생성하지 못했습니다.")
 
-        final_plan_data = json.loads(validated_plan_str)
-
-        if destination_geocode and destination_geocode.get('country_code'):
-            final_plan_data['country_code'] = destination_geocode.get('country_code')
+        # 서버 측 지오코딩 API를 호출하는 코드를 제거했으므로,
+        # 이 부분은 주석 처리하거나 제거합니다.
+        # destination_geocode = get_geocode(data.get('destination'))
+        # if destination_geocode and destination_geocode.get('country_code'):
+        #     final_plan_data['country_code'] = destination_geocode.get('country_code')
 
         full_plan_data = { 'plan': final_plan_data, 'request_details': data }
         doc_ref = db.collection('plans').document()
