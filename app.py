@@ -29,27 +29,37 @@ try:
     if not FIREBASE_CONFIG_STR:
         raise ValueError("FIREBASE_CONFIG 환경 변수가 설정되지 않았습니다.")
     
-    # 환경 변수에서 받은 JSON 문자열을 파싱 (작은따옴표 제거)
-    # Cloudtype 환경에서는 문자열에 추가적인 따옴표가 있을 수 있으므로 제거합니다.
+    # Cloudtype 환경 변수에서 작은따옴표가 포함될 수 있으므로 제거
     if FIREBASE_CONFIG_STR.startswith("'") and FIREBASE_CONFIG_STR.endswith("'"):
-        cred_json_str = FIREBASE_CONFIG_STR[1:-1]
+        config_str = FIREBASE_CONFIG_STR[1:-1]
     else:
-        cred_json_str = FIREBASE_CONFIG_STR
+        config_str = FIREBASE_CONFIG_STR
 
-    cred_json = json.loads(cred_json_str)
+    # JSON 문자열을 파이썬 딕셔너리로 변환
+    cred_json = json.loads(config_str)
     
+    # private_key의 '\n' 문자가 '\\n'으로 이스케이프된 경우를 처리
     if 'private_key' in cred_json:
         cred_json['private_key'] = cred_json['private_key'].replace('\\n', '\n')
     
+    # Firebase 앱이 이미 초기화되지 않았는지 확인
     if not firebase_admin._apps:
         cred = credentials.Certificate(cred_json)
         firebase_admin.initialize_app(cred)
+        
     db = firestore.client()
     print("✅ Firebase 초기화 성공")
-except Exception as e:
-    print(f"❌ Firebase 초기화 중 오류 발생: {e}")
-    # 초기화 실패 시 db를 None으로 유지
+
+except json.JSONDecodeError as json_err:
+    print(f"❌ Firebase 설정 JSON 파싱 오류: {json_err}")
+    print(f"--- 전달된 FIREBASE_CONFIG 문자열 (처음 100자) ---")
+    print(FIREBASE_CONFIG_STR[:100] + "...")
+    print("-----------------------------------------")
     db = None
+except Exception as e:
+    print(f"❌ Firebase 초기화 중 예측하지 못한 오류 발생: {e}")
+    db = None
+
 
 # --- Gemini 모델 초기화 ---
 model = None
