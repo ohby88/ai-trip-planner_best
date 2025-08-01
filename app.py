@@ -4,10 +4,9 @@ import re
 import requests
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import google.generativeai as genai
-from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
+from dotenv import load_dotenv
 
 # .env 파일에서 환경 변수를 로드합니다.
 load_dotenv()
@@ -28,20 +27,16 @@ try:
     if not FIREBASE_CONFIG_STR:
         raise ValueError("FIREBASE_CONFIG 환경 변수가 설정되지 않았습니다.")
     
-    # Cloudtype 환경 변수에서 작은따옴표가 포함될 수 있으므로 제거
     if FIREBASE_CONFIG_STR.startswith("'") and FIREBASE_CONFIG_STR.endswith("'"):
         config_str = FIREBASE_CONFIG_STR[1:-1]
     else:
         config_str = FIREBASE_CONFIG_STR
 
-    # JSON 문자열을 파이썬 딕셔너리로 변환
     cred_json = json.loads(config_str)
     
-    # private_key의 '\n' 문자가 '\\n'으로 이스케이프된 경우를 처리
     if 'private_key' in cred_json:
         cred_json['private_key'] = cred_json['private_key'].replace('\\n', '\n')
     
-    # Firebase 앱이 이미 초기화되지 않았는지 확인
     if not firebase_admin._apps:
         cred = credentials.Certificate(cred_json)
         firebase_admin.initialize_app(cred)
@@ -51,31 +46,11 @@ try:
 
 except json.JSONDecodeError as json_err:
     print(f"❌ Firebase 설정 JSON 파싱 오류: {json_err}")
-    print(f"--- 전달된 FIREBASE_CONFIG 문자열 (처음 100자) ---")
-    print(FIREBASE_CONFIG_STR[:100] + "...")
-    print("-----------------------------------------")
     db = None
 except Exception as e:
     print(f"❌ Firebase 초기화 중 예측하지 못한 오류 발생: {e}")
     db = None
 
-
-# --- Gemini 모델 초기화 ---
-model = None
-try:
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY가 .env 파일에 설정되지 않았습니다.")
-    genai.configure(api_key=GEMINI_API_KEY)
-    generation_config = genai.GenerationConfig(response_mime_type="application/json")
-    model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
-    print("✅ Gemini 모델 초기화 성공")
-except Exception as e:
-    print(f"❌ Gemini 모델 초기화 중 오류 발생: {e}")
-    model = None
-
-# 서버 측 Geocoding 헬퍼 함수는 더 이상 사용하지 않으므로, 더 이상 필요하지 않습니다.
-# def get_geocode(address):
-#     ...
 
 # --- 라우트(경로) 설정 ---
 @app.route('/')
@@ -118,78 +93,26 @@ def get_kakao_directions():
     except Exception as e:
         return jsonify({"error": "카카오 API 오류"}), 500
 
-@app.route('/generate', methods=['POST'])
-def generate_plan():
-    """AI를 이용해 여행 계획을 생성하고, 검증 후 반환하는 핵심 함수"""
-    if not model or not db:
-        return jsonify({'error': 'AI 모델 또는 데이터베이스가 초기화되지 않았습니다.'}), 500
-        
+# AI 호출 로직을 클라이언트로 옮겼기 때문에, 서버는 이제 Firestore에 저장하는 역할만 담당합니다.
+@app.route('/save_plan', methods=['POST'])
+def save_plan():
+    if not db:
+        return jsonify({'error': '데이터베이스가 초기화되지 않았습니다.'}), 500
     try:
         data = request.json
-        original_prompt = f"""
-당신은 여행 계획 전문가입니다. 다음 요구사항에 맞춰 여행 계획을 JSON 형식으로 작성해주세요.
+        final_plan_data = data.get('plan')
+        request_details = data.get('request_details')
 
-**요구사항:**
-- **여행지:** {data.get('destination')}
-- **기간:** {data.get('duration')}
-- **동행:** {data.get('companions')}
-- **여행 스타일:** {data.get('pace')}
-- **선호 활동:** {', '.join(data.get('preferredActivities', []))}
-- **주요 이동 수단:** {data.get('transportation')}
-- **숙소 유형:** {data.get('lodgingType')}
-- **첫날 도착 시간:** {data.get('arrivalTime')}
-- **마지막 날 출발 시간:** "오후 (저녁까지 즐기기)"
+        if not final_plan_data or not request_details:
+            raise ValueError("요청 데이터 형식이 올바르지 않습니다.")
 
-**JSON 출력 형식 (반드시 이 형식을 따라야 합니다):**
-{{
-  "title": "{data.get('destination')} 맞춤 여행 코스",
-  "daily_plans": [
-    {{
-      "day": 1,
-      "theme": "도착 그리고 첫 만남",
-      "activities": [
-        {{"place": "추천 장소 1", "type": "식사", "description": "장소에 대한 간략한 설명"}},
-        {{"place": "추천 장소 2", "type": "관광", "description": "장소에 대한 간략한 설명"}},
-        {{"place": "추천 숙소", "type": "숙소", "description": "숙소에 대한 간략한 설명"}}
-      ]
-    }}
-  ]
-}}
-
-**규칙:**
-- `daily_plans` 배열은 비워두지 마세요.
-- 각 `activities` 배열에는 최소 3개 이상의 활동을 포함해주세요.
-- `type`은 '식사', '관광', '카페', '쇼핑', '액티비티', '숙소' 중에서 선택하세요.
-- 각 날의 마지막 활동은 반드시 `type: '숙소'`여야 합니다. (단, 당일치기 제외)
-- 모든 장소 이름은 "{data.get('destination')}" 내에 실제로 존재하는 정확한 명칭을 사용해주세요.
-- 장소 이름이 중복되지 않도록 주의해주세요.
-"""
-        # 재시도 로직을 제거하고, AI 계획을 한 번만 생성하도록 수정합니다.
-        print(f"AI 계획 생성 시도")
-        response = model.generate_content(original_prompt)
-        raw_text = response.text
-        
-        match = re.search(r'```json\s*(\{.*?\})\s*```', raw_text, re.DOTALL) or re.search(r'\{.*\}', raw_text, re.DOTALL)
-        if not match:
-            raise ValueError("AI가 유효한 JSON 형식의 응답을 생성하지 못했습니다.")
-        plan_json_str = match.group(1) if match.groups() else match.group(0)
-        
-        try:
-            final_plan_data = json.loads(plan_json_str)
-        except json.JSONDecodeError:
-            raise ValueError("AI가 유효한 JSON 문법의 응답을 생성하지 못했습니다.")
-
-        if not isinstance(final_plan_data.get('daily_plans'), list) or not final_plan_data['daily_plans']:
-            raise ValueError("'daily_plans' 배열이 비어있거나 누락되었습니다.")
-
-        full_plan_data = { 'plan': final_plan_data, 'request_details': data }
+        full_plan_data = { 'plan': final_plan_data, 'request_details': request_details }
         doc_ref = db.collection('plans').document()
         doc_ref.set(full_plan_data)
         
-        return jsonify({'plan': final_plan_data, 'plan_id': doc_ref.id})
-    
+        return jsonify({'plan_id': doc_ref.id})
     except Exception as e:
-        print(f"플랜 생성 중 오류: {e}")
+        print(f"플랜 저장 중 오류: {e}")
         return jsonify({'error': str(e)}), 500
 
 # 로컬 개발 환경에서 직접 실행할 때 사용
