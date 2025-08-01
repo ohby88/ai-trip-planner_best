@@ -3,6 +3,7 @@ import json
 import re
 import requests
 import threading
+import uuid  # ◀️ uuid 라이브러리 추가
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import google.generativeai as genai
@@ -30,7 +31,6 @@ try:
     if not FIREBASE_CONFIG_STR:
         raise ValueError("FIREBASE_CONFIG 환경 변수가 설정되지 않았습니다.")
     
-    # Cloudtype 환경 변수에서 작은따옴표가 포함될 수 있으므로 제거
     if FIREBASE_CONFIG_STR.startswith("'") and FIREBASE_CONFIG_STR.endswith("'"):
         config_str = FIREBASE_CONFIG_STR[1:-1]
     else:
@@ -94,6 +94,11 @@ def get_geocode(address):
 def create_plan_in_background(data, plan_id):
     """백그라운드에서 실행될 AI 계획 생성 및 저장 함수"""
     with app.app_context():
+        # ◀️ 백그라운드 작업 시작 시, 가장 먼저 Firestore에 상태를 기록
+        doc_ref = db.collection('plans').document(plan_id)
+        doc_ref.set({'status': 'processing', 'request_details': data})
+        print(f"⏳ Plan {plan_id} 생성 시작...")
+        
         try:
             prompt = f"""
             당신은 여행 계획 전문가입니다. 다음 요구사항에 맞춰 여행 계획을 JSON 형식으로 작성해주세요.
@@ -160,7 +165,7 @@ def create_plan_in_background(data, plan_id):
                     continue
                 
                 if destination_geocode and destination_geocode.get('viewport'):
-                    # ... (이 부분은 기존의 복잡한 유효성 검증 로직을 그대로 사용하시면 됩니다)
+                    # 여기에 기존의 유효성 검증 로직을 그대로 사용하시면 됩니다.
                     pass
 
                 print("✅ 계획 유효성 검증 성공!")
@@ -175,12 +180,12 @@ def create_plan_in_background(data, plan_id):
                 final_plan_data['country_code'] = destination_geocode.get('country_code')
 
             full_plan_data = {'plan': final_plan_data, 'request_details': data, 'status': 'completed'}
-            db.collection('plans').document(plan_id).set(full_plan_data)
+            doc_ref.set(full_plan_data) # ◀️ 기존 문서를 덮어씁니다.
             print(f"✅ Plan {plan_id} 저장 완료.")
 
         except Exception as e:
             print(f"❌ 백그라운드 작업 오류: {e}")
-            db.collection('plans').document(plan_id).set({'status': 'failed', 'error': str(e), 'request_details': data})
+            doc_ref.set({'status': 'failed', 'error': str(e), 'request_details': data})
 
 # --- 라우트(경로) 설정 ---
 @app.route('/')
@@ -231,15 +236,15 @@ def generate_plan():
         
     try:
         data = request.json
-        doc_ref = db.collection('plans').document()
-        plan_id = doc_ref.id
+        # ◀️ Firestore에 접속하는 대신, 로컬에서 고유 ID를 생성합니다.
+        plan_id = str(uuid.uuid4())
         
-        doc_ref.set({'status': 'processing', 'request_details': data})
-        
+        # ◀️ Firestore 관련 작업을 모두 백그라운드로 넘깁니다.
         thread = threading.Thread(target=create_plan_in_background, args=(data, plan_id))
         thread.daemon = True
         thread.start()
         
+        # ◀️ 생성된 ID를 즉시 반환합니다. (네트워크 지연 없음)
         return jsonify({'plan_id': plan_id})
     
     except Exception as e:
